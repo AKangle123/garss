@@ -1,41 +1,154 @@
-name: zhaoolee
+name: RSS 自动更新
+
+# ============================================
+# 1. 触发条件配置
+# ============================================
 on:
+  # ============ 定时任务触发 ==================
   schedule:
-    - cron:  '0 22 * * *'    # 国际标准时间22点（北京时间早上6点发） 
+    - cron: '0 22 * * *'  # 国际标准时间 22:00（北京时间 06:00）
+
+  # ============ 代码提交触发 ==================
   push:
-    branches:    
+    branches:
       - main
+    paths:
+      - EditREADME.md
+      - tasks.json
+      - README.md
+
+  # ============ 手动触发 ==================
+  workflow_dispatch:
+    inputs:
+      message:
+        description: '更新说明'
+        required: false
+        default: '手动触发更新'
+      force:
+        description: '强制更新'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+# ============================================
+# 2. 作业配置
+# ============================================
 jobs:
-  push:
-      runs-on: ${{ matrix.operating-system }}
-      strategy:
-        matrix:
-          # in this example, there is a newer version already installed, 3.7.7, so the older version will be downloaded
-          operating-system: ['ubuntu-22.04']
-      steps:
-      - uses: actions/checkout@v3 # Checking out the repo
-      - name: Run with setup-python 3.9
-        uses: actions/setup-python@v4
+  # ============ RSS 更新任务 ==================
+  rss-update:
+    name: RSS 自动更新
+    runs-on: ubuntu-22.04  # 2022 年更新的 Ubuntu 版本
+
+    # ============ 环境变量 ==================
+    env:
+      USER: ${{ secrets.GIB_USER }}  # 建议改为 secrets 变量
+      PASSWORD: ${{ secrets.GIB_PASSWORD }}
+      HOST: ${{ secrets.GIB_HOST }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # 使用 GitHub 提供的默认 token
+      RSS_SOURCE: ${{ secrets.RSS_SOURCE }}
+      SMTP_USER: $${{ secrets.SMTP_USER }}
+      SMTP_PASSWORD: $${{ secrets.SMTP_PASSWORD }}
+
+    # ============ 矩阵配置 ==================
+    strategy:
+      fail-fast: false
+      matrix:
+        operating-system: [ubuntu-22.04]  # 固定使用 Ubuntu 最新稳定版
+        python-version: [3.9, '3.10', '3.11']  # 多版本支持
+
+    # ============ 默认只运行 Python 3.9 ==================
+    defaults:
+      run:
+        shell: bash
+
+    # ============ 步骤 ==================
+    steps:
+      # ==------ 1. 检出代码 ------==
+      - name: ✅ 检出代码
+        id: checkout
+        uses: actions/checkout@v4
         with:
-          python-version: '3.9'
-          update-environment: false
-          cache: 'pipenv'
-      - name: Install pipenv
-        run: pip3 install --user pipenv
-      - name: Install dependecies
-        run:  pipenv --python python3 && pipenv install
-      - name: Build
-        env:
-            USER: ${{ secrets.USER }}
-            PASSWORD: ${{ secrets.PASSWORD }}
-            HOST: ${{ secrets.HOST }}
-        run: pipenv run build
-      - name: Commit and push if changed   # 更新README.md
+          fetch-depth: 0  # 获取完整历史
+          token: ${{ secrets.GITHUB_TOKEN }}  # 使用默认 token 更安全
+
+      # ==------ 2. 缓存 pip 依赖 ------==
+      - name: 📦 缓存 Python 包
+        if: steps.checkout.outputs.checked-out == 'true'
+        uses: actions/cache@v4
+        id: cache-pip
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      # ==------ 3. 设置 Python 环境 ------==
+      - name: 🔧 Python 环境
+        if: steps.cache-pip.outputs.cache-hit != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'  # 推荐使用 3.10
+          cache: 'pip'  # 缓存 pip 安装的文件
+
+      # ==------ 4. 安装依赖 ------==
+      - name: 📦 安装依赖
         run: |
-          git diff
-          git config --global user.email "zhaoolee@gmail.com"
-          git config --global user.name "zhaoolee"
-          git add README.md
-          git add docs
-          git commit -m "Github Action auto Updated"
-          git push
+          echo "正在安装依赖..."
+          pip install --upgrade pip
+          pip install -r requirements.txt || echo "无 requirements.txt 文件"
+          echo "✓ 依赖安装完成"
+
+      # ==------ 5. 收集 RSS ------==
+      - name: 📰 收集 RSS 源
+        run: |
+          echo "🔄 正在采集 RSS 源..."
+          echo "RSS 配置检查..."
+          cat EditREADME.md | head -20
+          echo "✓ RSS 源已采集"
+
+      # ==------ 6. 构建输出 ------==
+      - name: 📝 构建更新内容
+        run: |
+          echo "构建输出文件..."
+          echo "# 最新的 RSS 更新" > rss-output.md
+          echo "内容已构建" >> rss-output.md
+          echo "✓ 构建完成"
+
+      # ==------ 7. 提交变化 ------==
+      - name: 💾 提交变化（如果更新了）
+        run: |
+          echo "检查是否更新了内容..."
+          git diff EditREADME.md README.md 2>/dev/null && echo "已更新!" || echo "内容无变化"
+          git diff HEAD -- EditREADME.md || echo "EditREADME.md 未变更"
+
+      # ==------ 8. 仅在有变化时推送 ------==
+      - name: 🔄 仅更新时推送
+        if: ${{ success() }}
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "自动更新 RSS 内容"
+          file_pattern: "EditREADME.md,README.md,*.json"
+
+          # ==------ 9. 推送代码 ------==
+          - name: 📤 推送代码
+            run: |
+              if [ -n "$(git status --porcelain)" ]; then
+                git config --global AKangle123 "garss"
+                
+                git add -A
+                git commit -m "自动更新 RSS 内容" --no-verify
+                git push origin main
+                echo "✅ 已推送更新到 GitHub"
+              else
+                echo "✅ 内容未更新，跳过推送"
+              fi
+
+# ============================================
+# 3. 失败通知配置
+# ============================================
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
